@@ -7,12 +7,7 @@ import json
 import ctypes
 import threading
 
-try:
-    from PIL import ImageGrab
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow"])
-    from PIL import ImageGrab
+from PIL import ImageGrab
 
 VK_OEM_4 = 0xDB
 
