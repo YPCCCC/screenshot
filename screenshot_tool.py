@@ -6,6 +6,10 @@ import sys
 import json
 import ctypes
 import threading
+import logging
+
+logging.basicConfig(level=logging.ERROR, stream=sys.stderr, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 try:
     from PIL import ImageGrab
@@ -63,8 +67,8 @@ class ScreenshotApp:
                 with open(self._config_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 return data.get('save_path')
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError):
+            logger.error("Failed to load config", exc_info=True)
         return None
 
     def _save_config(self):
@@ -74,8 +78,8 @@ class ScreenshotApp:
                     {'save_path': self.save_path}, f,
                     ensure_ascii=False, indent=2,
                 )
-        except Exception:
-            pass
+        except (OSError, TypeError):
+            logger.error("Failed to save config", exc_info=True)
 
     def _change_path(self):
         new_path = filedialog.askdirectory(
