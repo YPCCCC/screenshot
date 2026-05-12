@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 config.json
+.superpowers/
+build/
+dist/
+*.spec
+upx-*/

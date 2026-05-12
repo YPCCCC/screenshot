@@ -14,7 +14,123 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow"])
     from PIL import ImageGrab
 
-VK_OEM_4 = 0xDB
+HOTKEY_DEFAULT_VK = 0xDB  # [
+
+VK_TO_NAME = {
+    8: 'Backspace', 9: 'Tab', 13: 'Enter',
+    32: 'Space',
+    48: '0', 49: '1', 50: '2', 51: '3', 52: '4',
+    53: '5', 54: '6', 55: '7', 56: '8', 57: '9',
+    65: 'A', 66: 'B', 67: 'C', 68: 'D', 69: 'E', 70: 'F',
+    71: 'G', 72: 'H', 73: 'I', 74: 'J', 75: 'K', 76: 'L',
+    77: 'M', 78: 'N', 79: 'O', 80: 'P', 81: 'Q', 82: 'R',
+    83: 'S', 84: 'T', 85: 'U', 86: 'V', 87: 'W', 88: 'X',
+    89: 'Y', 90: 'Z',
+    96: 'NumPad 0', 97: 'NumPad 1', 98: 'NumPad 2',
+    99: 'NumPad 3', 100: 'NumPad 4', 101: 'NumPad 5',
+    102: 'NumPad 6', 103: 'NumPad 7', 104: 'NumPad 8',
+    105: 'NumPad 9',
+    106: 'NumPad *', 107: 'NumPad +', 109: 'NumPad -',
+    110: 'NumPad .', 111: 'NumPad /',
+    112: 'F1', 113: 'F2', 114: 'F3', 115: 'F4',
+    116: 'F5', 117: 'F6', 118: 'F7', 119: 'F8',
+    120: 'F9', 121: 'F10', 122: 'F11', 123: 'F12',
+    186: ';', 187: '=', 188: ',', 189: '-', 190: '.',
+    191: '/', 192: '`',
+    219: '[', 220: '\\', 221: ']', 222: "'",
+}
+
+MODIFIER_VKS = {16, 17, 18, 91, 92, 20}
+
+
+class HotkeyDialog:
+    def __init__(self, parent):
+        self.result_vk = None
+        self.result_name = None
+
+        self.win = tk.Toplevel(parent)
+        self.win.title("设置快捷键")
+        self.win.resizable(False, False)
+        self.win.configure(bg='#1e1e2e')
+        self.win.transient(parent)
+        self.win.grab_set()
+
+        W, H = 340, 220
+        px = parent.winfo_rootx() + (parent.winfo_width() - W) // 2
+        py = parent.winfo_rooty() + (parent.winfo_height() - H) // 2
+        self.win.geometry(f"{W}x{H}+{px}+{py}")
+
+        tk.Label(
+            self.win,
+            text="请按下你想使用的快捷键...",
+            bg='#1e1e2e', fg='#cdd6f4',
+            font=('微软雅黑', 11),
+        ).pack(pady=(16, 8))
+
+        self.key_display = tk.Label(
+            self.win,
+            text="等待按键...",
+            bg='#313244', fg='#89b4fa',
+            font=('微软雅黑', 24, 'bold'),
+            width=10, height=2,
+        )
+        self.key_display.pack(pady=(0, 8))
+
+        tk.Label(
+            self.win,
+            text="提示：建议选择不常用的键，避免与其他操作冲突",
+            bg='#1e1e2e', fg='#a6adc8',
+            font=('微软雅黑', 8),
+        ).pack()
+
+        btn_frame = tk.Frame(self.win, bg='#1e1e2e')
+        btn_frame.pack(pady=(12, 12))
+
+        self.confirm_btn = tk.Button(
+            btn_frame, text="确认",
+            command=self._confirm,
+            bg='#a6e3a1', fg='#1e1e2e',
+            font=('微软雅黑', 12, 'bold'),
+            relief='flat', cursor='hand2',
+            padx=28, pady=10, bd=0,
+            state='disabled',
+        )
+        self.confirm_btn.pack(side='left', padx=(0, 12))
+
+        tk.Button(
+            btn_frame, text="取消",
+            command=self._cancel,
+            bg='#f38ba8', fg='#1e1e2e',
+            font=('微软雅黑', 12, 'bold'),
+            relief='flat', cursor='hand2',
+            padx=28, pady=10, bd=0,
+        ).pack(side='right')
+
+        self.win.bind('<KeyPress>', self._on_key)
+        self.win.bind('<Escape>', lambda e: self._cancel())
+        self.win.protocol('WM_DELETE_WINDOW', self._cancel)
+        self.win.focus_force()
+
+    def _on_key(self, event):
+        vk = event.keycode
+        if vk in MODIFIER_VKS:
+            return
+        self.result_vk = vk
+        self.result_name = VK_TO_NAME.get(vk, event.keysym)
+        self.key_display.config(text=self.result_name)
+        self.confirm_btn.config(state='normal')
+
+    def _confirm(self):
+        self.win.destroy()
+
+    def _cancel(self):
+        self.result_vk = None
+        self.result_name = None
+        self.win.destroy()
+
+    def show(self):
+        self.win.wait_window()
+        return self.result_vk, self.result_name
 
 
 class ScreenshotApp:
@@ -32,9 +148,9 @@ class ScreenshotApp:
         self.root = tk.Tk()
         self.root.withdraw()
 
-        saved = self._load_config()
-        if saved and os.path.isdir(saved):
-            self.save_path = saved
+        saved_path, self._hotkey_vk = self._load_config()
+        if saved_path and os.path.isdir(saved_path):
+            self.save_path = saved_path
         else:
             self._prompt_save_path()
 
@@ -62,16 +178,22 @@ class ScreenshotApp:
             if os.path.exists(self._config_file):
                 with open(self._config_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                return data.get('save_path')
+                return data.get('save_path'), data.get('hotkey_vk', HOTKEY_DEFAULT_VK)
         except Exception:
             pass
-        return None
+        return None, HOTKEY_DEFAULT_VK
 
     def _save_config(self):
         try:
+            hotkey_name = self._hotkey_label.cget('text').split(': ', 1)[1] if hasattr(self, '_hotkey_label') else '['
             with open(self._config_file, 'w', encoding='utf-8') as f:
                 json.dump(
-                    {'save_path': self.save_path}, f,
+                    {
+                        'save_path': self.save_path,
+                        'hotkey_vk': self._hotkey_vk,
+                        'hotkey_name': hotkey_name,
+                    },
+                    f,
                     ensure_ascii=False, indent=2,
                 )
         except Exception:
@@ -155,11 +277,16 @@ class ScreenshotApp:
         self.path_label.bind('<Button-1>', lambda _e: self._change_path())
 
         # ── Shortcut hint ─────────────────────────────────────────────────────
-        tk.Label(
-            win, text="快捷键: [",
-            bg=BG, fg=SUBTEXT,
+        hotkey_name = VK_TO_NAME.get(self._hotkey_vk, '[')
+        self._hotkey_label = tk.Label(
+            win,
+            text=f"快捷键: {hotkey_name}",
+            bg=BG, fg=BLUE,
             font=('微软雅黑', 8),
-        ).pack(pady=(4, 0))
+            cursor='hand2',
+        )
+        self._hotkey_label.pack(pady=(4, 0))
+        self._hotkey_label.bind('<Button-1>', lambda _e: self._change_hotkey())
 
         # ── Screenshot button ─────────────────────────────────────────────────
         tk.Button(
@@ -227,11 +354,20 @@ class ScreenshotApp:
         )
         self._hotkey_thread.start()
 
+    def _change_hotkey(self):
+        dlg = HotkeyDialog(self.float_win)
+        vk, name = dlg.show()
+        if vk is not None and name is not None:
+            self._hotkey_vk = vk
+            self._hotkey_label.config(text=f"快捷键: {name}")
+            self._save_config()
+            self._set_status(f"快捷键已更新: {name}", self.COLOR_GREEN)
+
     def _hotkey_loop(self):
         was_pressed = False
         while self._running:
             time.sleep(0.05)
-            is_pressed = ctypes.windll.user32.GetAsyncKeyState(VK_OEM_4) & 0x8000
+            is_pressed = ctypes.windll.user32.GetAsyncKeyState(self._hotkey_vk) & 0x8000
             if is_pressed and not was_pressed:
                 self.root.after(0, self._capture)
             was_pressed = is_pressed
@@ -263,13 +399,20 @@ class ScreenshotApp:
             self.root.update()
             time.sleep(0.45)
 
-            screenshot = ImageGrab.grab()
+            self._screenshot = ImageGrab.grab()
 
             self.float_win.deiconify()
             self.float_win.attributes('-topmost', True)
             self.float_win.lift()
-            self.float_win.focus_force()
 
+            self.float_win.after(80, self._prompt_filename)
+        except Exception:
+            self._capturing = False
+            self.float_win.deiconify()
+            self.float_win.attributes('-topmost', True)
+
+    def _prompt_filename(self):
+        try:
             filename = simpledialog.askstring(
                 "保存截图",
                 "请输入图片名称（无需填写扩展名）：",
@@ -295,7 +438,8 @@ class ScreenshotApp:
                     parent=self.float_win,
                 )
 
-            screenshot.save(filepath, 'PNG')
+            self._screenshot.save(filepath, 'PNG')
+            self._screenshot = None
             self._set_status(f"✅ 已保存: {display_name}", self.COLOR_GREEN)
         finally:
             self._capturing = False
