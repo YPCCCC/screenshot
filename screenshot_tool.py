@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog
+from tkinter import filedialog, messagebox
 import time
 import os
 import sys
@@ -148,7 +148,8 @@ class ScreenshotApp:
         self.root = tk.Tk()
         self.root.withdraw()
 
-        saved_path, self._hotkey_vk = self._load_config()
+        saved_path, self._hotkey_vk, auto_scroll = self._load_config()
+        self._auto_scroll_var = tk.BooleanVar(value=auto_scroll)
         if saved_path and os.path.isdir(saved_path):
             self.save_path = saved_path
         else:
@@ -178,10 +179,14 @@ class ScreenshotApp:
             if os.path.exists(self._config_file):
                 with open(self._config_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                return data.get('save_path'), data.get('hotkey_vk', HOTKEY_DEFAULT_VK)
+                return (
+                    data.get('save_path'),
+                    data.get('hotkey_vk', HOTKEY_DEFAULT_VK),
+                    data.get('auto_scroll', False),
+                )
         except Exception:
             pass
-        return None, HOTKEY_DEFAULT_VK
+        return None, HOTKEY_DEFAULT_VK, False
 
     def _save_config(self):
         try:
@@ -192,6 +197,7 @@ class ScreenshotApp:
                         'save_path': self.save_path,
                         'hotkey_vk': self._hotkey_vk,
                         'hotkey_name': hotkey_name,
+                        'auto_scroll': self._auto_scroll_var.get(),
                     },
                     f,
                     ensure_ascii=False, indent=2,
@@ -238,7 +244,7 @@ class ScreenshotApp:
         win.configure(bg=BG)
         win.protocol("WM_DELETE_WINDOW", self._exit)
 
-        W, H = 250, 270
+        W, H = 250, 295
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         win.geometry(f"{W}x{H}+{sw - W - 20}+{(sh - H) // 2}")
 
@@ -327,6 +333,20 @@ class ScreenshotApp:
         ).pack(side='right', expand=True, fill='x', padx=(4, 0))
 
         # ── Status bar ────────────────────────────────────────────────────────
+        self._scroll_cb = tk.Checkbutton(
+            win,
+            text="截图后自动翻页 (Page Down)",
+            variable=self._auto_scroll_var,
+            command=self._on_auto_scroll_toggle,
+            bg=BG, fg=SUBTEXT,
+            selectcolor=SURFACE,
+            activebackground=BG,
+            activeforeground=GREEN,
+            font=('微软雅黑', 8),
+            cursor='hand2',
+        )
+        self._scroll_cb.pack(fill='x', padx=12, pady=(2, 0))
+
         self.status_label = tk.Label(
             win, text="📌 就绪",
             bg=BG, fg=SUBTEXT,
@@ -372,6 +392,31 @@ class ScreenshotApp:
                 self.root.after(0, self._capture)
             was_pressed = is_pressed
 
+    def _force_foreground(self, window):
+        try:
+            hwnd = window.winfo_id()
+            fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+            fg_thread_id = ctypes.windll.user32.GetWindowThreadProcessId(fg_hwnd, None)
+            our_thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
+
+            if fg_thread_id and fg_thread_id != our_thread_id:
+                ctypes.windll.user32.AttachThreadInput(our_thread_id, fg_thread_id, True)
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+                ctypes.windll.user32.BringWindowToTop(hwnd)
+                ctypes.windll.user32.AttachThreadInput(our_thread_id, fg_thread_id, False)
+            else:
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+                ctypes.windll.user32.BringWindowToTop(hwnd)
+        except Exception:
+            pass
+
+    def _refocus_entry(self, entry):
+        try:
+            if entry.winfo_exists():
+                entry.focus_force()
+        except Exception:
+            pass
+
     def _set_status(self, text, color=None):
         if color is None:
             color = self.COLOR_SUBTEXT
@@ -401,9 +446,13 @@ class ScreenshotApp:
 
             self._screenshot = ImageGrab.grab()
 
+            if self._auto_scroll_var.get():
+                self._send_page_down()
+
             self.float_win.deiconify()
             self.float_win.attributes('-topmost', True)
             self.float_win.lift()
+            self._force_foreground(self.float_win)
 
             self.float_win.after(80, self._prompt_filename)
         except Exception:
@@ -411,13 +460,93 @@ class ScreenshotApp:
             self.float_win.deiconify()
             self.float_win.attributes('-topmost', True)
 
+    def _send_page_down(self):
+        VK_NEXT = 0x22
+        ctypes.windll.user32.keybd_event(VK_NEXT, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(VK_NEXT, 0, 2, 0)
+        time.sleep(0.1)
+
+    def _on_auto_scroll_toggle(self):
+        self._save_config()
+
     def _prompt_filename(self):
         try:
-            filename = simpledialog.askstring(
-                "保存截图",
-                "请输入图片名称（无需填写扩展名）：",
-                parent=self.float_win,
+            result = [None]
+
+            dialog = tk.Toplevel(self.float_win)
+            dialog.title("保存截图")
+            dialog.resizable(False, False)
+            dialog.configure(bg='#1e1e2e')
+            dialog.transient(self.float_win)
+
+            W, H = 340, 140
+            px = self.float_win.winfo_rootx() + (self.float_win.winfo_width() - W) // 2
+            py = self.float_win.winfo_rooty() + (self.float_win.winfo_height() - H) // 2
+            dialog.geometry(f"{W}x{H}+{px}+{py}")
+
+            tk.Label(
+                dialog,
+                text="请输入图片名称（无需填写扩展名）：",
+                bg='#1e1e2e', fg='#cdd6f4',
+                font=('微软雅黑', 10),
+            ).pack(pady=(16, 8))
+
+            entry_var = tk.StringVar()
+            entry = tk.Entry(
+                dialog,
+                textvariable=entry_var,
+                bg='#313244', fg='#cdd6f4',
+                insertbackground='#cdd6f4',
+                font=('微软雅黑', 11),
+                relief='flat', bd=4,
             )
+            entry.pack(fill='x', padx=20, ipady=4)
+
+            btn_frame = tk.Frame(dialog, bg='#1e1e2e')
+            btn_frame.pack(pady=(10, 12))
+
+            def _ok():
+                result[0] = entry_var.get()
+                dialog.destroy()
+
+            def _cancel():
+                dialog.destroy()
+
+            tk.Label(btn_frame, bg='#1e1e2e', width=4).pack(side='left')
+
+            tk.Button(
+                btn_frame, text="确定",
+                command=_ok,
+                bg='#a6e3a1', fg='#1e1e2e',
+                font=('微软雅黑', 10, 'bold'),
+                relief='flat', cursor='hand2',
+                padx=20, pady=6, bd=0,
+            ).pack(side='left', padx=(0, 8))
+
+            tk.Button(
+                btn_frame, text="取消",
+                command=_cancel,
+                bg='#f38ba8', fg='#1e1e2e',
+                font=('微软雅黑', 10, 'bold'),
+                relief='flat', cursor='hand2',
+                padx=20, pady=6, bd=0,
+            ).pack(side='left')
+
+            dialog.bind('<Return>', lambda e: _ok())
+            dialog.bind('<Escape>', lambda e: _cancel())
+            dialog.protocol('WM_DELETE_WINDOW', _cancel)
+
+            dialog.attributes('-topmost', True)
+            dialog.update_idletasks()
+            self._force_foreground(dialog)
+            dialog.focus_force()
+            dialog.grab_set()
+            dialog.after(50, entry.focus_force)
+            dialog.after(200, self._refocus_entry, entry)
+
+            dialog.wait_window()
+
+            filename = result[0]
 
             if not filename or not filename.strip():
                 self._set_status("🗑️  已取消", self.COLOR_SUBTEXT)
