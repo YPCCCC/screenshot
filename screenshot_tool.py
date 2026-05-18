@@ -6,6 +6,7 @@ import sys
 import json
 import ctypes
 import threading
+import re
 
 try:
     from PIL import ImageGrab
@@ -41,6 +42,103 @@ VK_TO_NAME = {
 }
 
 MODIFIER_VKS = {16, 17, 18, 91, 92, 20}
+
+NAMING_RULES = [
+    ("Overview", "概述",       ["概", "ov"]),
+    ("SYS",      "系统",       ["s", "sy", "系"]),
+    ("BMC",      "BMC管理",    ["bm", "bmc"]),
+    ("BIOS",     "BIOS管理",   ["bi", "bio", "bios"]),
+    ("CHASSIS",  "机箱",       ["ch", "机"]),
+    ("DIMM",     "DIMM插槽",   ["di", "dimm"]),
+    ("PSU",      "电源",       ["ps", "psu", "电"]),
+    ("CPU",      "处理器",     ["cp", "cpu", "处"]),
+    ("PCIE",     "PCIe",       ["pc", "pci", "pcie"]),
+    ("NIC",      "网卡",       ["ni", "nic", "网"]),
+    ("BP",       "背板",       ["bp", "背"]),
+    ("NVME",     "NVMe硬盘",   ["nv", "nvm", "nvme"]),
+    ("HDD",      "HDD硬盘",    ["h", "hd", "hdd"]),
+    ("FW",       "固件",       ["f", "fw", "固"]),
+]
+
+
+def _auto_complete(text):
+    parts = text.split('&')
+    result = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        matched = None
+        for alias, _, triggers in NAMING_RULES:
+            if part.lower() in triggers or part.lower() == alias.lower():
+                matched = alias
+                break
+        if not matched:
+            for alias, _, triggers in NAMING_RULES:
+                if alias.lower().startswith(part.lower()):
+                    matched = alias
+                    break
+        result.append(matched if matched else part)
+    return '&'.join(result)
+
+
+def _is_full_alias(text):
+    t = text.strip()
+    if not t:
+        return False
+    for alias, _, triggers in NAMING_RULES:
+        if t.lower() == alias.lower() or t.lower() in triggers:
+            return True
+    return False
+
+
+def _count_prefix_matches(text):
+    t = text.strip().lower()
+    if not t:
+        return 0, []
+    matches = set()
+    for alias, _, triggers in NAMING_RULES:
+        if alias.lower().startswith(t):
+            matches.add(alias)
+        for trig in triggers:
+            if trig.startswith(t):
+                matches.add(alias)
+                break
+    return len(matches), list(matches)
+
+
+def _smart_complete(prev_text, new_text):
+    if not new_text:
+        return new_text
+
+    parts = new_text.split('&')
+    last_part = parts[-1].strip() if parts else ''
+
+    if last_part:
+        exact = False
+        for alias, _, triggers in NAMING_RULES:
+            if last_part.lower() in triggers or last_part.lower() == alias.lower():
+                exact = True
+                break
+
+        if not exact:
+            count, _ = _count_prefix_matches(last_part)
+            if count > 1:
+                return new_text
+
+    if prev_text and new_text.startswith(prev_text) and len(new_text) > len(prev_text):
+        appended = new_text[len(prev_text):]
+        last_seg = prev_text.rsplit('&', 1)[-1].strip()
+
+        if _is_full_alias(last_seg) and appended.strip():
+            candidate = prev_text + '&' + appended.strip()
+            new_seg = appended.strip()
+            c, _ = _count_prefix_matches(new_seg)
+            if c > 1:
+                return candidate
+            return _auto_complete(candidate)
+
+    return _auto_complete(new_text)
 
 
 class HotkeyDialog:
@@ -148,8 +246,10 @@ class ScreenshotApp:
         self.root = tk.Tk()
         self.root.withdraw()
 
-        saved_path, self._hotkey_vk, auto_scroll = self._load_config()
+        saved_path, self._hotkey_vk, auto_scroll, show_quick_ref, show_tag_panel = self._load_config()
         self._auto_scroll_var = tk.BooleanVar(value=auto_scroll)
+        self._show_quick_ref_var = tk.BooleanVar(value=show_quick_ref)
+        self._show_tag_panel_var = tk.BooleanVar(value=show_tag_panel)
         if saved_path and os.path.isdir(saved_path):
             self.save_path = saved_path
         else:
@@ -183,10 +283,12 @@ class ScreenshotApp:
                     data.get('save_path'),
                     data.get('hotkey_vk', HOTKEY_DEFAULT_VK),
                     data.get('auto_scroll', False),
+                    data.get('show_quick_ref', False),
+                    data.get('show_tag_panel', False),
                 )
         except Exception:
             pass
-        return None, HOTKEY_DEFAULT_VK, False
+        return None, HOTKEY_DEFAULT_VK, False, False, False
 
     def _save_config(self):
         try:
@@ -198,6 +300,8 @@ class ScreenshotApp:
                         'hotkey_vk': self._hotkey_vk,
                         'hotkey_name': hotkey_name,
                         'auto_scroll': self._auto_scroll_var.get(),
+                        'show_quick_ref': self._show_quick_ref_var.get(),
+                        'show_tag_panel': self._show_tag_panel_var.get(),
                     },
                     f,
                     ensure_ascii=False, indent=2,
@@ -244,7 +348,7 @@ class ScreenshotApp:
         win.configure(bg=BG)
         win.protocol("WM_DELETE_WINDOW", self._exit)
 
-        W, H = 250, 295
+        W, H = 250, 320
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         win.geometry(f"{W}x{H}+{sw - W - 20}+{(sh - H) // 2}")
 
@@ -346,6 +450,34 @@ class ScreenshotApp:
             cursor='hand2',
         )
         self._scroll_cb.pack(fill='x', padx=12, pady=(2, 0))
+
+        self._ref_cb = tk.Checkbutton(
+            win,
+            text="显示命名快捷参考",
+            variable=self._show_quick_ref_var,
+            command=self._on_quick_ref_toggle,
+            bg=BG, fg=SUBTEXT,
+            selectcolor=SURFACE,
+            activebackground=BG,
+            activeforeground=GREEN,
+            font=('微软雅黑', 8),
+            cursor='hand2',
+        )
+        self._ref_cb.pack(fill='x', padx=12, pady=(2, 0))
+
+        self._tag_panel_cb = tk.Checkbutton(
+            win,
+            text="截后弹标签面板",
+            variable=self._show_tag_panel_var,
+            command=self._on_tag_panel_toggle,
+            bg=BG, fg=SUBTEXT,
+            selectcolor=SURFACE,
+            activebackground=BG,
+            activeforeground=GREEN,
+            font=('微软雅黑', 8),
+            cursor='hand2',
+        )
+        self._tag_panel_cb.pack(fill='x', padx=12, pady=(2, 0))
 
         self.status_label = tk.Label(
             win, text="📌 就绪",
@@ -454,7 +586,10 @@ class ScreenshotApp:
             self.float_win.lift()
             self._force_foreground(self.float_win)
 
-            self.float_win.after(80, self._prompt_filename)
+            if self._show_tag_panel_var.get():
+                self.float_win.after(80, self._show_tag_panel)
+            else:
+                self.float_win.after(80, self._prompt_filename)
         except Exception:
             self._capturing = False
             self.float_win.deiconify()
@@ -469,6 +604,172 @@ class ScreenshotApp:
     def _on_auto_scroll_toggle(self):
         self._save_config()
 
+    def _on_quick_ref_toggle(self):
+        self._save_config()
+
+    def _on_tag_panel_toggle(self):
+        self._save_config()
+
+    def _show_tag_panel(self):
+        BG = '#313244'
+        TEXT = '#cdd6f4'
+        GREEN_BG = '#a6e3a1'
+        GREEN_FG = '#1e1e2e'
+        RED = '#f38ba8'
+        BLUE = '#89b4fa'
+        GRAY = '#6C7086'
+
+        panel = tk.Toplevel(self.float_win)
+        panel.overrideredirect(True)
+        panel.configure(bg=BG)
+
+        PW, PH = 280, 210
+        px = self.float_win.winfo_rootx() - 50
+        py = self.float_win.winfo_rooty() + self.float_win.winfo_height()
+        sw, sh = panel.winfo_screenwidth(), panel.winfo_screenheight()
+        if px + PW > sw:
+            px = sw - PW - 5
+        if py + PH > sh:
+            py = self.float_win.winfo_rooty() - PH
+        panel.geometry(f"{PW}x{PH}+{px}+{py}")
+
+        panel.attributes('-topmost', True)
+
+        _selected = set()
+
+        def _dismiss():
+            panel.destroy()
+            self._capturing = False
+
+        def _select_tag(alias):
+            if alias in _selected:
+                _selected.discard(alias)
+            else:
+                _selected.add(alias)
+            _refresh_buttons()
+            _refresh_selected_label()
+
+        def _refresh_buttons():
+            for btn in _tag_buttons:
+                alias = btn['text']
+                if alias in _selected:
+                    btn.configure(bg=GREEN_BG, fg=GREEN_FG, activebackground=GREEN_BG, activeforeground=GREEN_FG)
+                else:
+                    btn.configure(bg='#45475a', fg='#a6adc8', activebackground='#585b70', activeforeground=TEXT)
+
+        def _refresh_selected_label():
+            names = sorted(_selected, key=lambda n: [r[0] for r in NAMING_RULES].index(n))
+            if names:
+                selected_str.set(' & '.join(names))
+            else:
+                selected_str.set('（未选择）')
+
+        def _do_save():
+            names = sorted(_selected, key=lambda n: [r[0] for r in NAMING_RULES].index(n))
+            if not names:
+                return
+            filename = '&'.join(names)
+            panel.destroy()
+            self._do_save_image(filename)
+
+        def _do_skip():
+            _dismiss()
+            self._prompt_filename()
+
+        title_bar = tk.Frame(panel, bg='#1e1e2e', height=20)
+        title_bar.pack(fill='x')
+        tk.Label(
+            title_bar,
+            text="点击标签命名",
+            bg='#1e1e2e', fg=TEXT,
+            font=('微软雅黑', 8),
+        ).pack(side='left', padx=8, pady=2)
+        tk.Label(
+            title_bar,
+            text="×", bg='#1e1e2e', fg=GRAY,
+            font=('微软雅黑', 10),
+            cursor='hand2',
+        ).pack(side='right', padx=6, pady=1)
+        title_bar.children[title_bar.winfo_children()[-1]._name].bind('<Button-1>', lambda e: _dismiss())
+
+        tag_frame = tk.Frame(panel, bg=BG)
+        tag_frame.pack(fill='x', padx=8, pady=(6, 0))
+
+        _tag_buttons = []
+        for i, (alias, _, _) in enumerate(NAMING_RULES):
+            btn = tk.Button(
+                tag_frame,
+                text=alias,
+                command=lambda a=alias: _select_tag(a),
+                bg='#45475a', fg='#a6adc8',
+                font=('微软雅黑', 8),
+                relief='flat', cursor='hand2',
+                padx=4, pady=2, bd=0,
+                activebackground='#585b70', activeforeground=TEXT,
+                width=6,
+            )
+            _tag_buttons.append(btn)
+            row = i // 4
+            col = i % 4
+            btn.grid(row=row, column=col, padx=1, pady=1, sticky='ew')
+            if row > 0:
+                btn.grid_configure(pady=(0, 2))
+
+        selected_str = tk.StringVar(value='（未选择）')
+        sel_label = tk.Label(
+            panel,
+            textvariable=selected_str,
+            bg=BG, fg=BLUE,
+            font=('微软雅黑', 8),
+            anchor='center',
+        )
+        sel_label.pack(fill='x', padx=8, pady=(6, 2))
+
+        btn_frame = tk.Frame(panel, bg=BG)
+        btn_frame.pack(fill='x', padx=8, pady=(0, 6))
+
+        tk.Button(
+            btn_frame, text="✅ 保存",
+            command=_do_save,
+            bg=GREEN_BG, fg=GREEN_FG,
+            font=('微软雅黑', 9, 'bold'),
+            relief='flat', cursor='hand2',
+            padx=16, pady=4, bd=0,
+        ).pack(side='left', expand=True, fill='x', padx=(0, 4))
+
+        tk.Button(
+            btn_frame, text="⏭ 跳过/自定义",
+            command=_do_skip,
+            bg='#45475a', fg=TEXT,
+            font=('微软雅黑', 9),
+            relief='flat', cursor='hand2',
+            padx=16, pady=4, bd=0,
+            activebackground='#585b70',
+        ).pack(side='right', expand=True, fill='x', padx=(4, 0))
+
+        panel.update_idletasks()
+        self._force_foreground(panel)
+
+    def _do_save_image(self, filename):
+        filename = filename.strip()
+        for ch in r'\/:*?"<>|':
+            filename = filename.replace(ch, '_')
+
+        filepath = os.path.join(self.save_path, f"{filename}.png")
+        filepath, display_name = self._find_available_filename(filepath)
+
+        if filepath != os.path.join(self.save_path, f"{filename}.png"):
+            messagebox.showinfo(
+                "文件已存在",
+                f'"{filename}.png" 已存在，\n自动保存为 "{display_name}"',
+                parent=self.float_win,
+            )
+
+        self._screenshot.save(filepath, 'PNG')
+        self._screenshot = None
+        self._set_status(f"✅ 已保存: {display_name}", self.COLOR_GREEN)
+        self._capturing = False
+
     def _prompt_filename(self):
         try:
             result = [None]
@@ -479,7 +780,7 @@ class ScreenshotApp:
             dialog.configure(bg='#1e1e2e')
             dialog.transient(self.float_win)
 
-            W, H = 340, 140
+            W, H = 340, 210
             px = self.float_win.winfo_rootx() + (self.float_win.winfo_width() - W) // 2
             py = self.float_win.winfo_rooty() + (self.float_win.winfo_height() - H) // 2
             dialog.geometry(f"{W}x{H}+{px}+{py}")
@@ -489,7 +790,7 @@ class ScreenshotApp:
                 text="请输入图片名称（无需填写扩展名）：",
                 bg='#1e1e2e', fg='#cdd6f4',
                 font=('微软雅黑', 10),
-            ).pack(pady=(16, 8))
+            ).pack(pady=(16, 6))
 
             entry_var = tk.StringVar()
             entry = tk.Entry(
@@ -502,8 +803,67 @@ class ScreenshotApp:
             )
             entry.pack(fill='x', padx=20, ipady=4)
 
+            ref_parts_1 = "  ".join(f"{i+1}.{r[0]}" for i, r in enumerate(NAMING_RULES[:7]))
+            ref_parts_2 = "  ".join(f"{i+8}.{r[0]}" for i, r in enumerate(NAMING_RULES[7:]))
+
+            ref_frame = tk.Frame(dialog, bg='#1e1e2e')
+            ref_frame.pack(fill='x', padx=20, pady=(4, 0))
+
+            ref_label_1 = tk.Label(
+                ref_frame,
+                text=ref_parts_1,
+                bg='#1e1e2e', fg='#6C7086',
+                font=('微软雅黑', 8),
+                anchor='w',
+            )
+            ref_label_1.pack(anchor='w')
+
+            ref_label_2 = tk.Label(
+                ref_frame,
+                text=ref_parts_2,
+                bg='#1e1e2e', fg='#6C7086',
+                font=('微软雅黑', 8),
+                anchor='w',
+            )
+            ref_label_2.pack(anchor='w')
+
+            hint_label = tk.Label(
+                ref_frame,
+                text="💡 输入缩写自动补全，多标题用 & 连接，如: SYS&CPU",
+                bg='#1e1e2e', fg='#89B4FA',
+                font=('微软雅黑', 8),
+                anchor='w',
+            )
+            hint_label.pack(anchor='w', pady=(2, 0))
+
+            if not self._show_quick_ref_var.get():
+                ref_label_1.pack_forget()
+                ref_label_2.pack_forget()
+                hint_label.pack_forget()
+
+            _prev_text = [None]
+
+            def _on_key_release(event):
+                if event.keysym in ('Control_L', 'Control_R', 'Shift_L', 'Shift_R',
+                                    'Alt_L', 'Alt_R', 'Return', 'Escape', 'Tab',
+                                    'BackSpace', 'Delete', 'Left', 'Right', 'Home', 'End'):
+                    _prev_text[0] = entry_var.get()
+                    return
+                if event.state & 0x4:
+                    _prev_text[0] = entry_var.get()
+                    return
+
+                text = entry_var.get()
+                completed = _smart_complete(_prev_text[0], text)
+                if completed != text:
+                    entry_var.set(completed)
+                    entry.icursor(tk.END)
+                _prev_text[0] = entry_var.get()
+
+            entry.bind('<KeyRelease>', _on_key_release)
+
             btn_frame = tk.Frame(dialog, bg='#1e1e2e')
-            btn_frame.pack(pady=(10, 12))
+            btn_frame.pack(pady=(8, 12))
 
             def _ok():
                 result[0] = entry_var.get()
@@ -547,30 +907,13 @@ class ScreenshotApp:
             dialog.wait_window()
 
             filename = result[0]
-
             if not filename or not filename.strip():
                 self._set_status("🗑️  已取消", self.COLOR_SUBTEXT)
+                self._capturing = False
                 return
 
-            filename = filename.strip()
-
-            for ch in r'\/:*?"<>|':
-                filename = filename.replace(ch, '_')
-
-            filepath = os.path.join(self.save_path, f"{filename}.png")
-            filepath, display_name = self._find_available_filename(filepath)
-
-            if filepath != os.path.join(self.save_path, f"{filename}.png"):
-                messagebox.showinfo(
-                    "文件已存在",
-                    f'"{filename}.png" 已存在，\n自动保存为 "{display_name}"',
-                    parent=self.float_win,
-                )
-
-            self._screenshot.save(filepath, 'PNG')
-            self._screenshot = None
-            self._set_status(f"✅ 已保存: {display_name}", self.COLOR_GREEN)
-        finally:
+            self._do_save_image(filename.strip())
+        except Exception:
             self._capturing = False
 
     # ── Exit ──────────────────────────────────────────────────────────────────

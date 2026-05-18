@@ -1,0 +1,29 @@
+概述-概述
+系统-SYS
+BMC管理-BMC
+BIOS管理-BIOS
+机箱-CHASSIS
+DIMM插槽-DIMM
+电源-PSU
+处理器-CPU
+PCIe-PCIE
+网卡-NIC
+背板-BP
+NVMe硬盘-NVME
+HDD硬盘-HDD
+固件-FW
+
+Overview-概述
+System-SYS
+BMC manager-BMC
+BIOS manager-BIOS
+Chassis-CHASSIS
+DIMM slot-DIMM
+Power supplies-PSU
+Processors-CPU
+PCIe-PCIE
+Network adapter-NIC
+Back plane-BP
+NVMe disk-NVME
+HDD-HDD
+Firmware-FW
