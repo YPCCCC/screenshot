@@ -240,16 +240,20 @@ class ScreenshotApp:
         self._capturing = False
 
         self._config_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), 'config.json'
+            os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
+            else os.path.dirname(os.path.abspath(__file__)),
+            'config.json',
         )
 
         self.root = tk.Tk()
         self.root.withdraw()
 
-        saved_path, self._hotkey_vk, auto_scroll, show_quick_ref, show_tag_panel = self._load_config()
+        saved_path, self._hotkey_vk, auto_scroll, show_quick_ref, show_tag_panel, auto_name = self._load_config()
         self._auto_scroll_var = tk.BooleanVar(value=auto_scroll)
         self._show_quick_ref_var = tk.BooleanVar(value=show_quick_ref)
         self._show_tag_panel_var = tk.BooleanVar(value=show_tag_panel)
+        self._auto_name_var = tk.BooleanVar(value=auto_name)
+        self._init_tag_labels()
         if saved_path and os.path.isdir(saved_path):
             self.save_path = saved_path
         else:
@@ -285,10 +289,27 @@ class ScreenshotApp:
                     data.get('auto_scroll', False),
                     data.get('show_quick_ref', False),
                     data.get('show_tag_panel', False),
+                    data.get('auto_name', False),
                 )
         except Exception:
             pass
-        return None, HOTKEY_DEFAULT_VK, False, False, False
+        return None, HOTKEY_DEFAULT_VK, False, False, False, False
+
+    def _init_tag_labels(self):
+        try:
+            if os.path.exists(self._config_file):
+                with open(self._config_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                cfg_labels = data.get('tag_labels')
+                if cfg_labels:
+                    self._tag_labels = list(cfg_labels)
+                    return
+        except Exception:
+            pass
+        self._tag_labels = [r[0] for r in NAMING_RULES]
+
+    def _get_tag_labels(self):
+        return list(self._tag_labels)
 
     def _save_config(self):
         try:
@@ -302,6 +323,8 @@ class ScreenshotApp:
                         'auto_scroll': self._auto_scroll_var.get(),
                         'show_quick_ref': self._show_quick_ref_var.get(),
                         'show_tag_panel': self._show_tag_panel_var.get(),
+                        'auto_name': self._auto_name_var.get(),
+                        'tag_labels': self._tag_labels,
                     },
                     f,
                     ensure_ascii=False, indent=2,
@@ -348,7 +371,7 @@ class ScreenshotApp:
         win.configure(bg=BG)
         win.protocol("WM_DELETE_WINDOW", self._exit)
 
-        W, H = 250, 320
+        W, H = 250, 370
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         win.geometry(f"{W}x{H}+{sw - W - 20}+{(sh - H) // 2}")
 
@@ -478,6 +501,31 @@ class ScreenshotApp:
             cursor='hand2',
         )
         self._tag_panel_cb.pack(fill='x', padx=12, pady=(2, 0))
+
+        self._auto_name_cb = tk.Checkbutton(
+            win,
+            text="键盘输入自动补全",
+            variable=self._auto_name_var,
+            command=self._on_auto_name_toggle,
+            bg=BG, fg=SUBTEXT,
+            selectcolor=SURFACE,
+            activebackground=BG,
+            activeforeground=GREEN,
+            font=('微软雅黑', 8),
+            cursor='hand2',
+        )
+        self._auto_name_cb.pack(fill='x', padx=12, pady=(2, 0))
+
+        tk.Button(
+            win, text="✏️ 编辑标签",
+            command=self._edit_tag_labels,
+            bg=SURFACE, fg=SUBTEXT,
+            font=('微软雅黑', 9),
+            relief='flat', cursor='hand2',
+            padx=8, pady=3, bd=0,
+            activebackground='#45475a',
+            activeforeground=TEXT,
+        ).pack(fill='x', padx=12, pady=(4, 0))
 
         self.status_label = tk.Label(
             win, text="📌 就绪",
@@ -610,7 +658,77 @@ class ScreenshotApp:
     def _on_tag_panel_toggle(self):
         self._save_config()
 
+    def _on_auto_name_toggle(self):
+        self._save_config()
+
+    def _edit_tag_labels(self):
+        dialog = tk.Toplevel(self.float_win)
+        dialog.title("编辑标签")
+        dialog.resizable(False, False)
+        dialog.configure(bg='#1e1e2e')
+        dialog.transient(self.float_win)
+        dialog.grab_set()
+
+        W, H = 300, 350
+        px = self.float_win.winfo_rootx() + (self.float_win.winfo_width() - W) // 2
+        py = self.float_win.winfo_rooty() + (self.float_win.winfo_height() - H) // 2
+        dialog.geometry(f"{W}x{H}+{px}+{py}")
+
+        tk.Label(
+            dialog, text="一行一个标签名",
+            bg='#1e1e2e', fg='#cdd6f4',
+            font=('微软雅黑', 10),
+        ).pack(pady=(12, 6))
+
+        text = tk.Text(
+            dialog, bg='#313244', fg='#cdd6f4',
+            insertbackground='#cdd6f4',
+            font=('微软雅黑', 10),
+            relief='flat', bd=4,
+            width=30, height=14,
+        )
+        text.pack(fill='both', expand=True, padx=16, pady=(0, 10))
+        text.insert('1.0', '\n'.join(self._tag_labels))
+
+        btn_frame = tk.Frame(dialog, bg='#1e1e2e')
+        btn_frame.pack(pady=(0, 12))
+
+        def _do_save():
+            lines = text.get('1.0', 'end-1c').split('\n')
+            labels = [l.strip() for l in lines if l.strip()]
+            unique = []
+            seen = set()
+            for l in labels:
+                if l not in seen:
+                    unique.append(l)
+                    seen.add(l)
+            if unique:
+                self._tag_labels = unique
+                self._save_config()
+            dialog.destroy()
+
+        tk.Button(
+            btn_frame, text="保存", command=_do_save,
+            bg='#a6e3a1', fg='#1e1e2e',
+            font=('微软雅黑', 10, 'bold'),
+            relief='flat', cursor='hand2',
+            padx=20, pady=6, bd=0,
+        ).pack(side='left', padx=(0, 8))
+
+        tk.Button(
+            btn_frame, text="取消", command=dialog.destroy,
+            bg='#f38ba8', fg='#1e1e2e',
+            font=('微软雅黑', 10, 'bold'),
+            relief='flat', cursor='hand2',
+            padx=20, pady=6, bd=0,
+        ).pack(side='left')
+
+        dialog.attributes('-topmost', True)
+        dialog.focus_force()
+        text.focus_force()
+
     def _show_tag_panel(self):
+        labels = self._get_tag_labels()
         BG = '#313244'
         TEXT = '#cdd6f4'
         GREEN_BG = '#a6e3a1'
@@ -624,13 +742,17 @@ class ScreenshotApp:
         panel.configure(bg=BG)
 
         PW, PH = 280, 210
-        px = self.float_win.winfo_rootx() - 50
-        py = self.float_win.winfo_rooty() + self.float_win.winfo_height()
+        mx = panel.winfo_pointerx()
+        my = panel.winfo_pointery()
+        px = mx - PW // 2
+        py = my + 20
         sw, sh = panel.winfo_screenwidth(), panel.winfo_screenheight()
+        if px < 0:
+            px = 5
         if px + PW > sw:
             px = sw - PW - 5
         if py + PH > sh:
-            py = self.float_win.winfo_rooty() - PH
+            py = my - PH - 10
         panel.geometry(f"{PW}x{PH}+{px}+{py}")
 
         panel.attributes('-topmost', True)
@@ -657,15 +779,21 @@ class ScreenshotApp:
                 else:
                     btn.configure(bg='#45475a', fg='#a6adc8', activebackground='#585b70', activeforeground=TEXT)
 
+        def _label_index(alias):
+            try:
+                return labels.index(alias)
+            except ValueError:
+                return 999
+
         def _refresh_selected_label():
-            names = sorted(_selected, key=lambda n: [r[0] for r in NAMING_RULES].index(n))
+            names = sorted(_selected, key=_label_index)
             if names:
                 selected_str.set(' & '.join(names))
             else:
                 selected_str.set('（未选择）')
 
         def _do_save():
-            names = sorted(_selected, key=lambda n: [r[0] for r in NAMING_RULES].index(n))
+            names = sorted(_selected, key=_label_index)
             if not names:
                 return
             filename = '&'.join(names)
@@ -696,7 +824,7 @@ class ScreenshotApp:
         tag_frame.pack(fill='x', padx=8, pady=(6, 0))
 
         _tag_buttons = []
-        for i, (alias, _, _) in enumerate(NAMING_RULES):
+        for i, alias in enumerate(labels):
             btn = tk.Button(
                 tag_frame,
                 text=alias,
@@ -803,8 +931,10 @@ class ScreenshotApp:
             )
             entry.pack(fill='x', padx=20, ipady=4)
 
-            ref_parts_1 = "  ".join(f"{i+1}.{r[0]}" for i, r in enumerate(NAMING_RULES[:7]))
-            ref_parts_2 = "  ".join(f"{i+8}.{r[0]}" for i, r in enumerate(NAMING_RULES[7:]))
+            labels = self._get_tag_labels()
+            half = (len(labels) + 1) // 2
+            ref_parts_1 = "  ".join(f"{i+1}.{labels[i]}" for i in range(min(half, len(labels))))
+            ref_parts_2 = "  ".join(f"{i+half+1}.{labels[i]}" for i in range(half, len(labels)))
 
             ref_frame = tk.Frame(dialog, bg='#1e1e2e')
             ref_frame.pack(fill='x', padx=20, pady=(4, 0))
@@ -841,26 +971,27 @@ class ScreenshotApp:
                 ref_label_2.pack_forget()
                 hint_label.pack_forget()
 
-            _prev_text = [None]
+            if self._auto_name_var.get():
+                _prev_text = [None]
 
-            def _on_key_release(event):
-                if event.keysym in ('Control_L', 'Control_R', 'Shift_L', 'Shift_R',
-                                    'Alt_L', 'Alt_R', 'Return', 'Escape', 'Tab',
-                                    'BackSpace', 'Delete', 'Left', 'Right', 'Home', 'End'):
+                def _on_key_release(event):
+                    if event.keysym in ('Control_L', 'Control_R', 'Shift_L', 'Shift_R',
+                                        'Alt_L', 'Alt_R', 'Return', 'Escape', 'Tab',
+                                        'BackSpace', 'Delete', 'Left', 'Right', 'Home', 'End'):
+                        _prev_text[0] = entry_var.get()
+                        return
+                    if event.state & 0x4:
+                        _prev_text[0] = entry_var.get()
+                        return
+
+                    text = entry_var.get()
+                    completed = _smart_complete(_prev_text[0], text)
+                    if completed != text:
+                        entry_var.set(completed)
+                        entry.icursor(tk.END)
                     _prev_text[0] = entry_var.get()
-                    return
-                if event.state & 0x4:
-                    _prev_text[0] = entry_var.get()
-                    return
 
-                text = entry_var.get()
-                completed = _smart_complete(_prev_text[0], text)
-                if completed != text:
-                    entry_var.set(completed)
-                    entry.icursor(tk.END)
-                _prev_text[0] = entry_var.get()
-
-            entry.bind('<KeyRelease>', _on_key_release)
+                entry.bind('<KeyRelease>', _on_key_release)
 
             btn_frame = tk.Frame(dialog, bg='#1e1e2e')
             btn_frame.pack(pady=(8, 12))
